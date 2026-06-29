@@ -31,8 +31,12 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import winsound
 import cv2
 import numpy as np
+import platform, shutil
 import pytesseract
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+if platform.system() == "Windows":
+    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+else:
+    pytesseract.pytesseract.tesseract_cmd = shutil.which("tesseract") or "/opt/homebrew/bin/tesseract"
 from PIL import Image, ImageEnhance, ImageOps
 from tqdm import tqdm
 

@@ -164,7 +164,11 @@ def ocr_rapidocr(img):
 
 def ocr_tesseract(img):
     import pytesseract
-    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    import platform, shutil
+    if platform.system() == "Windows":
+        pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    else:
+        pytesseract.pytesseract.tesseract_cmd = shutil.which("tesseract") or "/opt/homebrew/bin/tesseract"
     return pytesseract.image_to_string(img, lang="spa+eng", config="--psm 6 --oem 1")
 
 _doctr_model = None

@@ -27,8 +27,12 @@ from extractor_transferencias import (
     listar_imagenes,
     resolver_salida,
 )
+import platform, shutil
 import pytesseract
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+if platform.system() == "Windows":
+    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+else:
+    pytesseract.pytesseract.tesseract_cmd = shutil.which("tesseract") or "/opt/homebrew/bin/tesseract"
 from PIL import Image, ImageEnhance, ImageOps
 from extractor_transferencias import extraer_datos
 
