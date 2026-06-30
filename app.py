@@ -139,6 +139,13 @@ def _start_job(engine_name, imagenes, cleanup_fn=None):
             from repair import reparar_csv, postprocesar_csv
             from benchmark_ocr import _skip
             csv_path = OUT_DIR / f"{engine_name}.csv"
+            _append_history({
+                "engine":     engine_name,
+                "fecha":      datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "n":          len(imagenes),
+                "csv":        f"{engine_name}.csv",
+                "duracion_s": round((datetime.datetime.now() - _t0).total_seconds()),
+            })
             carpeta_imagenes = imagenes[0].parent if imagenes else None
             if carpeta_imagenes and not _skip.is_set() and csv_path.exists():
                 _push({"done": 0, "n": 0, "avg_ms": 0, "eta": 0,
@@ -155,13 +162,6 @@ def _start_job(engine_name, imagenes, cleanup_fn=None):
                        "_status": "repair"})
             if csv_path.exists():
                 postprocesar_csv(csv_path, on_log=_log_post)
-            _append_history({
-                "engine":     engine_name,
-                "fecha":      datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "n":          len(imagenes),
-                "csv":        f"{engine_name}.csv",
-                "duracion_s": round((datetime.datetime.now() - _t0).total_seconds()),
-            })
             _push({"done": -1, "msg": f"Listo — {engine_name}", "csv": True, "engine": engine_name})
         except Exception as e:
             _push({"done": -1, "msg": f"Error: {e}", "csv": False})
