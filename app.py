@@ -156,7 +156,8 @@ def _start_job(engine_name, imagenes, cleanup_fn=None):
                     _push({"_log": msg, "done": 0, "n": 0, "avg_ms": 0, "eta": 0,
                            "imagen": msg, "CBU": "", "CUIT": "", "titular": "", "banco": "",
                            "_status": "repair"})
-                reparar_csv(csv_path, carpeta_imagenes, on_log=_log_repair, stop_event=_skip)
+                reparar_csv(csv_path, carpeta_imagenes, on_log=_log_repair, stop_event=_skip,
+                            debug_dir=OUT_DIR / "debug_banco")
             def _log_post(msg):
                 _push({"_log": msg, "done": 0, "n": 0, "avg_ms": 0, "eta": 0,
                        "imagen": msg, "CBU": "", "CUIT": "", "titular": "", "banco": "",

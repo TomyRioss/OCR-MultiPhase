@@ -27,7 +27,7 @@ def _campo_vacio(valor: str) -> bool:
     return not valor or valor.strip() == ""
 
 
-def _ocr_banco_crop(img: Image.Image) -> str:
+def _ocr_banco_crop(img: Image.Image, debug_path: Path = None) -> str:
     import numpy as np, cv2, pytesseract, shutil, platform
     if platform.system() == "Windows":
         pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
@@ -43,15 +43,21 @@ def _ocr_banco_crop(img: Image.Image) -> str:
     gray  = clahe.apply(gray)
     gray  = cv2.resize(gray, (gray.shape[1] * 2, gray.shape[0] * 2), interpolation=cv2.INTER_LANCZOS4)
     _, gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return pytesseract.image_to_string(Image.fromarray(gray), lang="spa+eng", config="--psm 7 --oem 1")
+    prepr = Image.fromarray(gray)
+    if debug_path:
+        prepr.save(str(debug_path))
+    texto = pytesseract.image_to_string(prepr, lang="spa+eng", config="--psm 7 --oem 1")
+    if not texto.strip():
+        texto = pytesseract.image_to_string(prepr, lang="spa+eng", config="--psm 6 --oem 1")
+    return texto
 
 
-def _ocr_con_motor(img, motor: str) -> str:
+def _ocr_con_motor(img, motor: str, debug_path: Path = None) -> str:
     if motor == "tesseract":
         from benchmark_ocr import ocr_tesseract
         return ocr_tesseract(img)
     elif motor == "tesseract_banco":
-        return _ocr_banco_crop(img)
+        return _ocr_banco_crop(img, debug_path=debug_path)
     elif motor == "rapidocr":
         from benchmark_ocr import ocr_rapidocr
         return ocr_rapidocr(img)
@@ -61,7 +67,7 @@ def _ocr_con_motor(img, motor: str) -> str:
     return ""
 
 
-def reparar_csv(csv_path: Path, carpeta_imagenes: Path, on_log=None, stop_event=None):
+def reparar_csv(csv_path: Path, carpeta_imagenes: Path, on_log=None, stop_event=None, debug_dir: Path = None):
     def log(msg):
         print(msg)
         if on_log:
@@ -89,6 +95,8 @@ def reparar_csv(csv_path: Path, carpeta_imagenes: Path, on_log=None, stop_event=
     log(f"[Reparación] {len(incompletas)} filas con campos vacíos")
 
     recuperados = 0
+    if debug_dir:
+        debug_dir.mkdir(parents=True, exist_ok=True)
 
     for idx, i in enumerate(incompletas, 1):
         if stop_event and stop_event.is_set():
@@ -115,7 +123,11 @@ def reparar_csv(csv_path: Path, carpeta_imagenes: Path, on_log=None, stop_event=
                 continue
 
             try:
-                texto = _ocr_con_motor(img, motor)
+                debug_path = None
+                if debug_dir and motor == "tesseract_banco":
+                    stem = Path(nombre).stem
+                    debug_path = debug_dir / f"{stem}_banco_crop.png"
+                texto = _ocr_con_motor(img, motor, debug_path=debug_path)
                 datos = extraer_datos(texto)
                 valor = datos.get(campo, "")
                 if valor:

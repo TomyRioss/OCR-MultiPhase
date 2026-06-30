@@ -48,7 +48,8 @@ BANCOS_CONOCIDOS = [
     "Credicoop", "Industrial", "Brubank", "Mercado Pago", "Uala", "Ualá",
     "NaranjaX", "Naranja X", "Nuevo Banco de Santa Fe", "Santa Fe",
     "Bind", "Wilobank", "Reba", "Lemon", "Personal Pay", "Modo", "Bapro",
-    "Claro Pay",
+    "Claro Pay", "YPF Virtual Wallet", "Bancor", "BPN",
+    "Administradora San Juan SA", "Coopel", "Coopeplus",
 ]
 
 # ──────────────────────────────────────────────
