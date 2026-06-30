@@ -34,7 +34,8 @@ def _ocr_banco_crop(img: Image.Image, debug_path: Path = None) -> str:
     else:
         pytesseract.pytesseract.tesseract_cmd = shutil.which("tesseract") or "/usr/bin/tesseract"
     w, h = img.size
-    crop = img.crop((0, int(h * 0.23), w, int(h * 0.32)))
+    # zona amplia cubre badge con nombres de 1, 2 o 3 líneas
+    crop = img.crop((0, int(h * 0.20), w, int(h * 0.45)))
     arr  = np.array(crop.convert("RGB"))
     gray = np.min(arr, axis=2).astype(np.uint8)
     if gray.mean() < 128:
@@ -46,10 +47,7 @@ def _ocr_banco_crop(img: Image.Image, debug_path: Path = None) -> str:
     prepr = Image.fromarray(gray)
     if debug_path:
         prepr.save(str(debug_path))
-    texto = pytesseract.image_to_string(prepr, lang="spa+eng", config="--psm 7 --oem 1")
-    if not texto.strip():
-        texto = pytesseract.image_to_string(prepr, lang="spa+eng", config="--psm 6 --oem 1")
-    return texto
+    return pytesseract.image_to_string(prepr, lang="spa+eng", config="--psm 6 --oem 1")
 
 
 def _ocr_con_motor(img, motor: str, debug_path: Path = None) -> str:
