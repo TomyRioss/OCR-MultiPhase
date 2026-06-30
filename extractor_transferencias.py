@@ -28,7 +28,6 @@ from pathlib import Path
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-import winsound
 import cv2
 import numpy as np
 import platform, shutil
@@ -249,12 +248,7 @@ def _score(datos: dict) -> int:
 
 
 def _beep_progreso(pct: int):
-    """25/50/75% → beep corto ascendente. 100% → secuencia triple prominente."""
-    if pct == 100:
-        for freq, dur in [(800, 200), (1000, 200), (1200, 400)]:
-            winsound.Beep(freq, dur)
-    else:
-        winsound.Beep({25: 600, 50: 700, 75: 800}[pct], 150)
+    pass
 
 
 _CONFIGS_ULTRA = [
