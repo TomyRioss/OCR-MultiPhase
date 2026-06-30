@@ -124,6 +124,7 @@ def _start_job(engine_name, imagenes, cleanup_fn=None):
                 preproc_dir = Path(tempfile.mkdtemp())
                 preproc_imgs = []
                 from benchmark_ocr import _skip as _skip_ref
+                _skip_ref.clear()
                 for i, img_path in enumerate(imagenes):
                     if _skip_ref.is_set():
                         break
