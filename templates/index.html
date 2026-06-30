@@ -553,6 +553,8 @@ function ocr() {
     uploadDropOpen: false,
     modelDropOpen: false,
     evtSource: null,
+    _retryCount: 0,
+    _sseOffset: 0,
     history: [],
     checkFile: null,
     checkLoading: false,
@@ -609,6 +611,7 @@ function ocr() {
       if (!res.ok) { termLine('error: ' + await res.text(), 'err'); this.resetUI(); return; }
       termLine(`iniciando ${this.currentEngine}...`, 'dim');
       this.pill = 'procesando';
+      this._retryCount = 0; this._sseOffset = 0;
       this.startTimer();
       this.listenStream(0);
     },
@@ -683,6 +686,7 @@ function ocr() {
       document.getElementById('bar').value = 0;
       termLine(`upload completo (${totalFiles} imágenes) — iniciando ${this.currentEngine}...`, 'dim');
       this.pill = 'procesando';
+      this._retryCount = 0; this._sseOffset = 0;
       this.startTimer();
       this.listenStream(0);
     },
@@ -702,6 +706,7 @@ function ocr() {
         }
         if (d._status === 'init' || d._status === 'repair') { termLine(d.imagen, 'dim'); return; }
         if (d._status === 'ocr_stats') { termLine(d.imagen, 'ok'); return; }
+        this._sseOffset = d.done;
         const pct = d.n ? Math.round(d.done / d.n * 100) : 0;
         document.getElementById('bar').value = pct;
         const pctEl = document.getElementById('elapsed-pct');
@@ -713,7 +718,19 @@ function ocr() {
         termLine(`[${String(d.done).padStart(3)}/${d.n}]  ${d.imagen}  CBU:${d.CBU||'—'}  CUIT:${d.CUIT||'—'}  ${d.titular||''}`, '');
         addRow(d);
       };
-      this.evtSource.onerror = () => { this.evtSource.close(); this.pill = 'error'; this.resetUI(); };
+      this.evtSource.onerror = () => {
+        this.evtSource.close();
+        if (!this.running) return;
+        if (this._retryCount < 10) {
+          const delay = Math.min(1000 * Math.pow(2, this._retryCount), 30000);
+          this._retryCount++;
+          this.pill = `reconectando (${this._retryCount})…`;
+          setTimeout(() => { if (this.running) this.listenStream(this._sseOffset || 0); }, delay);
+        } else {
+          this.pill = 'error';
+          this.resetUI();
+        }
+      };
     },
 
     startTimer() {
@@ -745,7 +762,13 @@ function ocr() {
       }
     },
 
-    stopEngine() { fetch('/stop', { method: 'POST' }); termLine('deteniendo...', 'dim'); this.stopTimer(); },
+    stopEngine() {
+      fetch('/stop', { method: 'POST' });
+      if (this.evtSource) { this.evtSource.close(); this.evtSource = null; }
+      this.pill = 'deteniendo…';
+      this.resetUI();
+      termLine('deteniendo...', 'dim');
+    },
     downloadCsv() { const f = new Date().toISOString().slice(0,19).replace('T',' '); window.location = '/csv/' + this.csvEngine + '?fecha=' + encodeURIComponent(f); },
     async openCsvModal(engine) {
       const eng = engine || this.csvEngine;
@@ -798,6 +821,9 @@ function ocr() {
     },
 
     async init() {
+      window.addEventListener('beforeunload', () => {
+        if (this.running) fetch('/stop', { method: 'POST', keepalive: true });
+      });
       const res  = await fetch('/status');
       const stat = await res.json();
       this.refreshFiles(stat.running ? stat.engine : null);
