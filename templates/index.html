@@ -614,7 +614,7 @@ function ocr() {
     },
 
     async startJob(files) {
-      const BATCH      = 100;
+      const BATCH      = 1;
       const totalFiles = files.length;
       const totalBatches = Math.ceil(totalFiles / BATCH);
       const session    = (crypto.randomUUID?.() || Math.random().toString(36).slice(2) + Date.now());
