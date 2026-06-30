@@ -180,7 +180,7 @@ def _start_job(engine_name, imagenes, cleanup_fn=None):
 
 @app.post("/upload-batch")
 def upload_batch():
-    session_id = request.form.get("session")
+    session_id = request.form.get("session") or request.args.get("session")
     if not session_id:
         return "session requerido", 400
     if session_id not in _sessions:

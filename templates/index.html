@@ -617,7 +617,7 @@ function ocr() {
       const BATCH      = 100;
       const totalFiles = files.length;
       const totalBatches = Math.ceil(totalFiles / BATCH);
-      const session    = crypto.randomUUID();
+      const session    = (crypto.randomUUID?.() || Math.random().toString(36).slice(2) + Date.now());
       const self       = this;
 
       termLine(`subiendo ${totalFiles} imágenes en ${totalBatches} lote${totalBatches !== 1 ? 's' : ''}...`, 'dim');
@@ -662,7 +662,7 @@ function ocr() {
             };
             xhr.onload  = () => xhr.status === 200 ? resolve() : reject(xhr.responseText);
             xhr.onerror = () => reject('error de red');
-            xhr.open('POST', '/upload-batch');
+            xhr.open('POST', '/upload-batch?session=' + encodeURIComponent(session));
             xhr.send(fd);
           });
         }
@@ -713,7 +713,7 @@ function ocr() {
         termLine(`[${String(d.done).padStart(3)}/${d.n}]  ${d.imagen}  CBU:${d.CBU||'—'}  CUIT:${d.CUIT||'—'}  ${d.titular||''}`, '');
         addRow(d);
       };
-      this.evtSource.onerror = () => { this.pill = 'error'; this.resetUI(); };
+      this.evtSource.onerror = () => { this.evtSource.close(); this.pill = 'error'; this.resetUI(); };
     },
 
     startTimer() {
