@@ -22,6 +22,7 @@ USO:
 import os
 import csv
 import re
+import unicodedata
 import argparse
 import logging
 from pathlib import Path
@@ -94,9 +95,13 @@ def _limpiar_titular(raw: str) -> str:
     return " ".join(w.capitalize() for w in palabras)
 
 
+def _norm(s: str) -> str:
+    return unicodedata.normalize("NFD", s).encode("ascii", "ignore").decode().lower()
+
+
 def _es_banco(linea: str) -> bool:
-    limpia = _solo_letras(linea)
-    return any(b.lower() in limpia.lower() for b in BANCOS_CONOCIDOS)
+    limpia = _norm(_solo_letras(linea))
+    return any(_norm(b) in limpia for b in BANCOS_CONOCIDOS)
 
 
 def extraer_datos(texto: str) -> dict:
@@ -160,9 +165,9 @@ def extraer_datos(texto: str) -> dict:
     # Limpiar íconos OCR del inicio antes de comparar.
     banco = ""
     for linea in lineas:
-        limpia = _solo_letras(linea)
+        limpia = _norm(_solo_letras(linea))
         for b in BANCOS_CONOCIDOS:
-            if b.lower() in limpia.lower():
+            if _norm(b) in limpia:
                 banco = b
                 break
         if banco:
