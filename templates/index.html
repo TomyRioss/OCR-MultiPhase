@@ -626,6 +626,7 @@ function ocr() {
       termLine(`subiendo ${totalFiles} imágenes en ${totalBatches} lote${totalBatches !== 1 ? 's' : ''}...`, 'dim');
       this.pill = `subiendo 0/${totalFiles}`;
       this.running = true;
+      this.startTimer();
       this.showResults = false;
       this.showCsv = false;
       this.showProgress = true;
@@ -687,7 +688,6 @@ function ocr() {
       termLine(`upload completo (${totalFiles} imágenes) — iniciando ${this.currentEngine}...`, 'dim');
       this.pill = 'procesando';
       this._retryCount = 0; this._sseOffset = 0;
-      this.startTimer();
       this.listenStream(0);
     },
 
