@@ -695,7 +695,7 @@ function ocr() {
         if (d.done === -1) {
           termLine(d.msg || 'listo', d.csv ? 'ok' : 'dim');
           this.pill = d.csv ? 'listo' : 'error';
-          if (d.csv) { this.showCsv = true; this.csvEngine = d.engine || ''; }
+          if (d.csv) { this.showCsv = true; this.csvEngine = d.engine || ''; this.refreshResultsTable(d.engine); }
           document.getElementById('bar').value = 0;
           this.showProgress = false;
           this.evtSource.close(); this.resetUI(); this.refreshFiles(null); this.loadHistory(); return;
@@ -753,6 +753,19 @@ function ocr() {
       this.csvRows = await res.json();
       this.csvEngine = eng;
       this.csvModal = true;
+    },
+    async refreshResultsTable(engine) {
+      const res = await fetch('/csv-json/' + engine);
+      if (!res.ok) return;
+      const rows = await res.json();
+      const tbody = document.getElementById('rows');
+      tbody.innerHTML = '';
+      const v = x => `<td title="${x||''}">${x||'<span class="miss">—</span>'}</td>`;
+      rows.forEach(d => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${d.imagen||''}</td>${v(d.CBU)}${v(d.CUIT)}${v(d.titular)}${v(d.banco)}`;
+        tbody.appendChild(tr);
+      });
     },
     resetUI() { this.running = false; this.stopTimer(); },
     resetAll() {
