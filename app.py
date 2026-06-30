@@ -2,7 +2,7 @@
 Web UI para OCR benchmark.
 Uso: python app.py  →  http://localhost:5000
 """
-import datetime, json, shutil, tempfile, threading, zipfile
+import datetime, json, os, shutil, tempfile, threading, zipfile
 from pathlib import Path
 from flask import Flask, Response, render_template, request, send_file
 
@@ -356,5 +356,6 @@ def csv_json(engine):
 
 if __name__ == "__main__":
     _start_key_listener()
-    print("Abriendo en http://localhost:5000")
-    app.run(debug=False, threaded=True, port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    print(f"Abriendo en http://localhost:{port}")
+    app.run(debug=False, threaded=True, host="0.0.0.0", port=port)
