@@ -140,7 +140,7 @@ def _start_job(engine_name, imagenes, cleanup_fn=None):
             from benchmark_ocr import _skip
             csv_path = OUT_DIR / f"{engine_name}.csv"
             carpeta_imagenes = imagenes[0].parent if imagenes else None
-            if carpeta_imagenes and not _skip.is_set():
+            if carpeta_imagenes and not _skip.is_set() and csv_path.exists():
                 _push({"done": 0, "n": 0, "avg_ms": 0, "eta": 0,
                        "imagen": "reparando campos vacíos...", "CBU": "", "CUIT": "",
                        "titular": "", "banco": "", "_status": "init"})
@@ -153,7 +153,8 @@ def _start_job(engine_name, imagenes, cleanup_fn=None):
                 _push({"_log": msg, "done": 0, "n": 0, "avg_ms": 0, "eta": 0,
                        "imagen": msg, "CBU": "", "CUIT": "", "titular": "", "banco": "",
                        "_status": "repair"})
-            postprocesar_csv(csv_path, on_log=_log_post)
+            if csv_path.exists():
+                postprocesar_csv(csv_path, on_log=_log_post)
             _append_history({
                 "engine":     engine_name,
                 "fecha":      datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
