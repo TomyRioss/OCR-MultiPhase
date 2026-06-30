@@ -19,7 +19,7 @@ from extractor_transferencias import extraer_datos
 CAMPOS_REPARAR = [
     ("CBU",   "tesseract"),
     ("CUIT",  "rapidocr"),
-    ("banco", "easyocr"),
+    ("banco", "tesseract"),
 ]
 
 
