@@ -142,7 +142,7 @@ def _start_job(engine_name, imagenes, cleanup_fn=None):
             csv_path = OUT_DIR / f"{engine_name}.csv"
             _append_history({
                 "engine":     engine_name,
-                "fecha":      datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "fecha":      (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S"),
                 "n":          len(imagenes),
                 "csv":        f"{engine_name}.csv",
                 "duracion_s": round((datetime.datetime.now() - _t0).total_seconds()),
