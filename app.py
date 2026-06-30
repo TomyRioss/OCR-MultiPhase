@@ -303,6 +303,14 @@ def stop():
     return "OK"
 
 
+@app.post("/reset-log")
+def reset_log():
+    with _job_lock:
+        if not _job_running:
+            _job_log.clear()
+    return "OK"
+
+
 @app.get("/history")
 def history():
     if not HISTORY_FILE.exists():

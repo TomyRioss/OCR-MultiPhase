@@ -769,6 +769,7 @@ function ocr() {
     },
     resetUI() { this.running = false; this.stopTimer(); },
     resetAll() {
+      fetch('/reset-log', { method: 'POST' });
       this.running = false; this.showProgress = false; this.showResults = false;
       this.showCsv = false; this.csvEngine = ''; this.pill = 'esperando';
       this.stopTimer();
