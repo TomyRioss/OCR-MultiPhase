@@ -19,7 +19,7 @@ from extractor_transferencias import extraer_datos
 CAMPOS_REPARAR = [
     ("CBU",   "tesseract"),
     ("CUIT",  "rapidocr"),
-    ("banco", "tesseract"),
+    ("banco", "tesseract_banco"),
 ]
 
 
@@ -27,10 +27,31 @@ def _campo_vacio(valor: str) -> bool:
     return not valor or valor.strip() == ""
 
 
+def _ocr_banco_crop(img: Image.Image) -> str:
+    import numpy as np, cv2, pytesseract, shutil, platform
+    if platform.system() == "Windows":
+        pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    else:
+        pytesseract.pytesseract.tesseract_cmd = shutil.which("tesseract") or "/usr/bin/tesseract"
+    w, h = img.size
+    crop = img.crop((0, int(h * 0.23), w, int(h * 0.32)))
+    arr  = np.array(crop.convert("RGB"))
+    gray = np.min(arr, axis=2).astype(np.uint8)
+    if gray.mean() < 128:
+        gray = cv2.bitwise_not(gray)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray  = clahe.apply(gray)
+    gray  = cv2.resize(gray, (gray.shape[1] * 2, gray.shape[0] * 2), interpolation=cv2.INTER_LANCZOS4)
+    _, gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return pytesseract.image_to_string(Image.fromarray(gray), lang="spa+eng", config="--psm 7 --oem 1")
+
+
 def _ocr_con_motor(img, motor: str) -> str:
     if motor == "tesseract":
         from benchmark_ocr import ocr_tesseract
         return ocr_tesseract(img)
+    elif motor == "tesseract_banco":
+        return _ocr_banco_crop(img)
     elif motor == "rapidocr":
         from benchmark_ocr import ocr_rapidocr
         return ocr_rapidocr(img)
