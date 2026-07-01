@@ -400,7 +400,7 @@ progress::-webkit-progress-value { background: var(--sidebar-active); border-rad
       </div>
       <div class="spacer"></div>
       <button x-show="showCsv" @click="openCsvModal()">Ver CSV</button>
-      <button x-show="showCsv" class="primary" @click="downloadCsv()">↓ Descargar CSV</button>
+      <button x-show="showCsv" class="primary" @click="downloadCsv()">↓ Descargar Excel</button>
       <button x-show="!running && (showResults || showCsv || showProgress)" @click="resetAll()" title="Reiniciar terminal y resultados" style="padding:12px 14px;font-size:1em;">↺</button>
       <button x-show="running" @click="stopEngine()" style="background:#c05050;color:#fff;border-color:#c05050">detener</button>
     </div>

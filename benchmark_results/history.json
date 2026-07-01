@@ -1,0 +1,30 @@
+[
+  {
+    "engine": "tesseract",
+    "fecha": "2026-07-01 16:27:50",
+    "n": 48,
+    "csv": "tesseract.csv",
+    "duracion_s": 27
+  },
+  {
+    "engine": "tesseract",
+    "fecha": "2026-06-30 04:34:42",
+    "n": 48,
+    "csv": "tesseract.csv",
+    "duracion_s": 22
+  },
+  {
+    "engine": "tesseract",
+    "fecha": "2026-06-30 04:09:00",
+    "n": 48,
+    "csv": "tesseract.csv",
+    "duracion_s": 23
+  },
+  {
+    "engine": "tesseract",
+    "fecha": "2026-06-30 03:59:57",
+    "n": 48,
+    "csv": "tesseract.csv",
+    "duracion_s": 22
+  }
+]

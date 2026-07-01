@@ -345,12 +345,20 @@ def csv_download(engine):
         # "2026-06-28 20:26:00" → "Extraccion 28-6 20:26"
         try:
             dt = datetime.datetime.strptime(fecha, "%Y-%m-%d %H:%M:%S")
-            name = f"Extraccion {dt.day}-{dt.month} {dt.strftime('%H:%M')}.csv"
+            name = f"Extraccion {dt.day}-{dt.month} {dt.strftime('%H:%M')}.xlsx"
         except Exception:
-            name = f"{engine}.csv"
+            name = f"{engine}.xlsx"
     else:
-        name = f"{engine}.csv"
-    return send_file(str(p), as_attachment=True, download_name=name)
+        name = f"{engine}.xlsx"
+
+    import pandas as pd
+    import io
+    df = pd.read_csv(p, dtype=str)
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False)
+    buf.seek(0)
+    return send_file(buf, as_attachment=True, download_name=name,
+                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.get("/csv-json/<engine>")
