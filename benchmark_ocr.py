@@ -43,13 +43,21 @@ def _limpiar_titular(raw):
 def extraer_datos(texto):
     lineas = [l.strip() for l in texto.splitlines() if l.strip()]
     titular = ""
+    # Formato de detalle de cuenta: la etiqueta puede incluir ruido del logo OCR.
     for i, linea in enumerate(lineas):
+        if re.match(r'^\s*TITULAR\b', linea, re.IGNORECASE) and i + 1 < len(lineas):
+            if _es_nombre(lineas[i + 1]):
+                titular = _limpiar_titular(lineas[i + 1])
+                break
+    for i, linea in enumerate(lineas):
+        if titular:
+            break
         if re.search(r'TU[LT]AR\s+DE\s+LA\s+CUENTA', linea, re.IGNORECASE):
             partes = []
             j = i + 1
             while j < len(lineas):
                 sig = lineas[j]
-                if re.match(r'CUIT\s*[:\-]', sig, re.IGNORECASE): break
+                if re.match(r'CUIT(?:\s*/\s*CUIL)?\s*[:\-]?', sig, re.IGNORECASE): break
                 if re.search(r'\d{10,}', sig): break
                 if any(b.lower() in _solo_letras(sig).lower() for b in BANCOS_CONOCIDOS): break
                 partes.append(sig)
@@ -65,11 +73,12 @@ def extraer_datos(texto):
                         break
                 break
     cuit = ""
-    m = re.search(r'CUIT\s*[:\-]?\s*(\d{2})\s*[-–]\s*(\d{8})\s*[-–]\s*([\dO])', texto, re.IGNORECASE)
+    m = re.search(r'CUIT(?:\s*/\s*CUIL)?\s*[:\-]?\s*(\d{2})\s*[-–]\s*(\d{8})\s*[-–]\s*([\dO])', texto, re.IGNORECASE)
     if m:
         cuit = f"{m.group(1)}-{m.group(2)}-{m.group(3).replace('O','0')}"
-    tipo_cuenta = "CVU" if re.search(r'\bCVU\b', texto, re.IGNORECASE) else \
-                  "CBU" if re.search(r'\bCBU\b', texto, re.IGNORECASE) else ""
+    etiqueta_generica = bool(re.search(r'\bCVU\s*/\s*CBU\b', texto, re.IGNORECASE))
+    tipo_cuenta = "CVU" if re.search(r'\bCVU\b', texto, re.IGNORECASE) and not etiqueta_generica else \
+                  "CBU" if re.search(r'\bCBU\b', texto, re.IGNORECASE) or etiqueta_generica else ""
     cbu = ""
     m = re.search(r'(?<!\d)(\d{22})(?!\d)', texto)
     if m:
@@ -84,6 +93,8 @@ def extraer_datos(texto):
                 banco = b
                 break
         if banco: break
+    if not banco and cbu != "N/A" and len(cbu) == 22 and cbu.startswith("007"):
+        banco = "Galicia"
     return {"titular": titular, "banco": banco, "CBU": cbu, "CUIT": cuit}
 
 def preprocess(img):

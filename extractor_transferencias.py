@@ -110,13 +110,21 @@ def extraer_datos(texto: str) -> dict:
     # ── TITULAR ──────────────────────────────────────────────────────────────
     # Ancla primaria: "TULAR DE LA CUENTA" (cubre "TITULAR" y el error OCR "FITUTAR")
     titular = ""
+    # El OCR puede añadir ruido al rótulo por el logo que aparece a su lado.
     for i, linea in enumerate(lineas):
+        if re.match(r'^\s*TITULAR\b', linea, re.IGNORECASE) and i + 1 < len(lineas):
+            if _es_nombre(lineas[i + 1]):
+                titular = _limpiar_titular(lineas[i + 1])
+                break
+    for i, linea in enumerate(lineas):
+        if titular:
+            break
         if re.search(r'TU[LT]AR\s+DE\s+LA\s+CUENTA', linea, re.IGNORECASE):
             partes = []
             j = i + 1
             while j < len(lineas):
                 sig = lineas[j]
-                if re.match(r'CUIT\s*[:\-]', sig, re.IGNORECASE):
+                if re.match(r'CUIT(?:\s*/\s*CUIL)?\s*[:\-]?', sig, re.IGNORECASE):
                     break
                 if re.search(r'\d{10,}', sig):   # número largo = CBU/alias → stop
                     break
@@ -140,15 +148,16 @@ def extraer_datos(texto: str) -> dict:
     # ── CUIT ─────────────────────────────────────────────────────────────────
     # Exactamente XX-XXXXXXXX-X (2-8-1 dígitos). Corregir O→0 en dígito final.
     cuit = ""
-    m = re.search(r'CUIT\s*[:\-]?\s*(\d{2})\s*[-–]\s*(\d{8})\s*[-–]\s*([\dO])', texto, re.IGNORECASE)
+    m = re.search(r'CUIT(?:\s*/\s*CUIL)?\s*[:\-]?\s*(\d{2})\s*[-–]\s*(\d{8})\s*[-–]\s*([\dO])', texto, re.IGNORECASE)
     if m:
         cuit = f"{m.group(1)}-{m.group(2)}-{m.group(3).replace('O', '0')}"
 
     # ── TIPO DE CUENTA ───────────────────────────────────────────────────────
     tipo_cuenta = ""
-    if re.search(r'\bCVU\b', texto, re.IGNORECASE):
+    etiqueta_generica = bool(re.search(r'\bCVU\s*/\s*CBU\b', texto, re.IGNORECASE))
+    if re.search(r'\bCVU\b', texto, re.IGNORECASE) and not etiqueta_generica:
         tipo_cuenta = "CVU"
-    elif re.search(r'\bCBU\b', texto, re.IGNORECASE):
+    elif re.search(r'\bCBU\b', texto, re.IGNORECASE) or etiqueta_generica:
         tipo_cuenta = "CBU"
 
     # ── CBU ──────────────────────────────────────────────────────────────────
@@ -172,6 +181,8 @@ def extraer_datos(texto: str) -> dict:
                 break
         if banco:
             break
+    if not banco and cbu != "N/A" and len(cbu) == 22 and cbu.startswith("007"):
+        banco = "Galicia"
 
     return {
         "titular": titular,
