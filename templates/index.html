@@ -400,7 +400,7 @@ progress::-webkit-progress-value { background: var(--sidebar-active); border-rad
       </div>
       <div class="spacer"></div>
       <button x-show="showCsv" @click="openCsvModal()">Ver CSV</button>
-      <button x-show="showCsv" class="primary" @click="downloadCsv()">↓ Descargar CSV</button>
+      <button x-show="showCsv" class="primary" @click="downloadCsv()">↓ Descargar Excel</button>
       <button x-show="!running && (showResults || showCsv || showProgress)" @click="resetAll()" title="Reiniciar terminal y resultados" style="padding:12px 14px;font-size:1em;">↺</button>
       <button x-show="running" @click="stopEngine()" style="background:#c05050;color:#fff;border-color:#c05050">detener</button>
     </div>
@@ -553,6 +553,8 @@ function ocr() {
     uploadDropOpen: false,
     modelDropOpen: false,
     evtSource: null,
+    _retryCount: 0,
+    _sseOffset: 0,
     history: [],
     checkFile: null,
     checkLoading: false,
@@ -609,25 +611,22 @@ function ocr() {
       if (!res.ok) { termLine('error: ' + await res.text(), 'err'); this.resetUI(); return; }
       termLine(`iniciando ${this.currentEngine}...`, 'dim');
       this.pill = 'procesando';
+      this._retryCount = 0; this._sseOffset = 0;
       this.startTimer();
       this.listenStream(0);
     },
 
     async startJob(files) {
-      const BATCH      = 100;
+      const BATCH      = 10;
       const totalFiles = files.length;
       const totalBatches = Math.ceil(totalFiles / BATCH);
-      const manifest = Array.from(files, f => `${f.name}:${f.size}:${f.lastModified}`);
-      let saved = null;
-      try { saved = JSON.parse(localStorage.getItem('ocr-upload-resume') || 'null'); } catch (_) {}
-      const resumable = saved && JSON.stringify(saved.manifest) === JSON.stringify(manifest);
-      const session = resumable ? saved.session : crypto.randomUUID();
-      localStorage.setItem('ocr-upload-resume', JSON.stringify({ session, manifest }));
+      const session    = (crypto.randomUUID?.() || Math.random().toString(36).slice(2) + Date.now());
       const self       = this;
 
       termLine(`subiendo ${totalFiles} imágenes en ${totalBatches} lote${totalBatches !== 1 ? 's' : ''}...`, 'dim');
       this.pill = `subiendo 0/${totalFiles}`;
       this.running = true;
+      this.startTimer();
       this.showResults = false;
       this.showCsv = false;
       this.showProgress = true;
@@ -648,29 +647,14 @@ function ocr() {
       };
 
       try {
-        const statusRes = await fetch('/upload-status/' + session);
-        if (!statusRes.ok) throw await statusRes.text();
-        const uploaded = new Set((await statusRes.json()).uploaded);
         for (let b = 0; b < totalBatches; b++) {
-          const slice = Array.from(files).slice(b * BATCH, (b + 1) * BATCH)
-            .filter(f => !uploaded.has(f.name));
-          if (!slice.length) {
-            const done = Math.min((b + 1) * BATCH, totalFiles);
-            const pct = Math.round(done / totalFiles * 100);
-            document.getElementById('bar').value = pct;
-            self.pill = `reanudado ${done}/${totalFiles} (${pct}%)`;
-            continue;
-          }
+          const slice = Array.from(files).slice(b * BATCH, (b + 1) * BATCH);
           const fd = new FormData();
           fd.append('session', session);
           for (const f of slice) fd.append('files', f);
 
-          let attempt = 0;
-          while (true) {
-            try {
-              await new Promise((resolve, reject) => {
+          await new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest();
-            xhr.timeout = 120000;
             xhr.upload.onprogress = ev => {
               if (!ev.lengthComputable) return;
               const batchFrac = ev.loaded / ev.total;
@@ -682,25 +666,9 @@ function ocr() {
             };
             xhr.onload  = () => xhr.status === 200 ? resolve() : reject(xhr.responseText);
             xhr.onerror = () => reject('error de red');
-            xhr.ontimeout = () => reject('tiempo de espera agotado');
-            xhr.open('POST', '/upload-batch');
+            xhr.open('POST', '/upload-batch?session=' + encodeURIComponent(session));
             xhr.send(fd);
           });
-              for (const f of slice) uploaded.add(f.name);
-              break;
-            } catch (err) {
-              attempt++;
-              const done = uploaded.size;
-              setUploadLine(`conexión interrumpida en ${done}/${totalFiles}; reintentando lote ${b + 1}/${totalBatches} (intento ${attempt})...`);
-              self.pill = `reanudando ${done}/${totalFiles}`;
-              await new Promise(resolve => setTimeout(resolve, Math.min(attempt * 2000, 15000)));
-              // Reconcile with the server: the last request may have saved its batch
-              // even when the browser lost the response.
-              const check = await fetch('/upload-status/' + session);
-              if (check.ok) for (const name of (await check.json()).uploaded) uploaded.add(name);
-              if (slice.every(f => uploaded.has(f.name))) break;
-            }
-          }
         }
       } catch (err) {
         termLine('error al subir: ' + err, 'err');
@@ -715,12 +683,11 @@ function ocr() {
         body: JSON.stringify({ session, engine: this.currentEngine }),
       });
       if (!res.ok) { termLine('error al iniciar: ' + await res.text(), 'err'); this.resetUI(); return; }
-      localStorage.removeItem('ocr-upload-resume');
       uploadLine = null;
       document.getElementById('bar').value = 0;
       termLine(`upload completo (${totalFiles} imágenes) — iniciando ${this.currentEngine}...`, 'dim');
       this.pill = 'procesando';
-      this.startTimer();
+      this._retryCount = 0; this._sseOffset = 0;
       this.listenStream(0);
     },
 
@@ -732,7 +699,7 @@ function ocr() {
         if (d.done === -1) {
           termLine(d.msg || 'listo', d.csv ? 'ok' : 'dim');
           this.pill = d.csv ? 'listo' : 'error';
-          if (d.csv) { this.showCsv = true; this.csvEngine = d.engine || ''; }
+          if (d.csv) { this.showCsv = true; this.csvEngine = d.engine || ''; this.refreshResultsTable(d.engine); }
           document.getElementById('bar').value = 0;
           this.showProgress = false;
           this.evtSource.close(); this.resetUI(); this.refreshFiles(null); this.loadHistory(); return;
@@ -744,6 +711,7 @@ function ocr() {
         }
         if (d._status === 'init' || d._status === 'repair') { termLine(d.imagen, 'dim'); return; }
         if (d._status === 'ocr_stats') { termLine(d.imagen, 'ok'); return; }
+        this._sseOffset = d.done;
         const pct = d.n ? Math.round(d.done / d.n * 100) : 0;
         document.getElementById('bar').value = pct;
         const pctEl = document.getElementById('elapsed-pct');
@@ -755,7 +723,19 @@ function ocr() {
         termLine(`[${String(d.done).padStart(3)}/${d.n}]  ${d.imagen}  CBU:${d.CBU||'—'}  CUIT:${d.CUIT||'—'}  ${d.titular||''}`, '');
         addRow(d);
       };
-      this.evtSource.onerror = () => { this.pill = 'error'; this.resetUI(); };
+      this.evtSource.onerror = () => {
+        this.evtSource.close();
+        if (!this.running) return;
+        if (this._retryCount < 10) {
+          const delay = Math.min(1000 * Math.pow(2, this._retryCount), 30000);
+          this._retryCount++;
+          this.pill = `reconectando (${this._retryCount})…`;
+          setTimeout(() => { if (this.running) this.listenStream(this._sseOffset || 0); }, delay);
+        } else {
+          this.pill = 'error';
+          this.resetUI();
+        }
+      };
     },
 
     startTimer() {
@@ -787,7 +767,13 @@ function ocr() {
       }
     },
 
-    stopEngine() { fetch('/stop', { method: 'POST' }); termLine('deteniendo...', 'dim'); this.stopTimer(); },
+    stopEngine() {
+      fetch('/stop', { method: 'POST' });
+      if (this.evtSource) { this.evtSource.close(); this.evtSource = null; }
+      this.pill = 'deteniendo…';
+      this.resetUI();
+      termLine('deteniendo...', 'dim');
+    },
     downloadCsv() { const f = new Date().toISOString().slice(0,19).replace('T',' '); window.location = '/csv/' + this.csvEngine + '?fecha=' + encodeURIComponent(f); },
     async openCsvModal(engine) {
       const eng = engine || this.csvEngine;
@@ -796,8 +782,22 @@ function ocr() {
       this.csvEngine = eng;
       this.csvModal = true;
     },
+    async refreshResultsTable(engine) {
+      const res = await fetch('/csv-json/' + engine);
+      if (!res.ok) return;
+      const rows = await res.json();
+      const tbody = document.getElementById('rows');
+      tbody.innerHTML = '';
+      const v = x => `<td title="${x||''}">${x||'<span class="miss">—</span>'}</td>`;
+      rows.forEach(d => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${d.imagen||''}</td>${v(d.CBU)}${v(d.CUIT)}${v(d.titular)}${v(d.banco)}`;
+        tbody.appendChild(tr);
+      });
+    },
     resetUI() { this.running = false; this.stopTimer(); },
     resetAll() {
+      fetch('/reset-log', { method: 'POST' });
       this.running = false; this.showProgress = false; this.showResults = false;
       this.showCsv = false; this.csvEngine = ''; this.pill = 'esperando';
       this.stopTimer();
@@ -826,6 +826,9 @@ function ocr() {
     },
 
     async init() {
+      window.addEventListener('beforeunload', () => {
+        if (this.running) fetch('/stop', { method: 'POST', keepalive: true });
+      });
       const res  = await fetch('/status');
       const stat = await res.json();
       this.refreshFiles(stat.running ? stat.engine : null);

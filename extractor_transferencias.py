@@ -22,13 +22,13 @@ USO:
 import os
 import csv
 import re
+import unicodedata
 import argparse
 import logging
 from pathlib import Path
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-import winsound
 import cv2
 import numpy as np
 import platform, shutil
@@ -50,7 +50,8 @@ BANCOS_CONOCIDOS = [
     "Credicoop", "Industrial", "Brubank", "Mercado Pago", "Uala", "Ualá",
     "NaranjaX", "Naranja X", "Nuevo Banco de Santa Fe", "Santa Fe",
     "Bind", "Wilobank", "Reba", "Lemon", "Personal Pay", "Modo", "Bapro",
-    "Claro Pay",
+    "Claro Pay", "YPF Virtual Wallet", "Bancor", "BPN", "ICBC",
+    "Administradora San Juan SA", "Coopel", "Coopeplus",
 ]
 
 # ──────────────────────────────────────────────
@@ -95,9 +96,13 @@ def _limpiar_titular(raw: str) -> str:
     return " ".join(w.capitalize() for w in palabras)
 
 
+def _norm(s: str) -> str:
+    return unicodedata.normalize("NFD", s).encode("ascii", "ignore").decode().lower()
+
+
 def _es_banco(linea: str) -> bool:
-    limpia = _solo_letras(linea)
-    return any(b.lower() in limpia.lower() for b in BANCOS_CONOCIDOS)
+    limpia = _norm(_solo_letras(linea))
+    return any(_norm(b) in limpia for b in BANCOS_CONOCIDOS)
 
 
 def _sin_ruido_logo(linea):
@@ -115,7 +120,7 @@ def extraer_datos(texto: str) -> dict:
     # ── TITULAR ──────────────────────────────────────────────────────────────
     # Ancla primaria: "TULAR DE LA CUENTA" (cubre "TITULAR" y el error OCR "FITUTAR")
     titular = ""
-    # Formato de detalle de cuenta: etiqueta "Titular" y nombre en la línea siguiente.
+    # El OCR puede añadir ruido al rótulo por el logo que aparece a su lado.
     for i, linea in enumerate(lineas):
         if re.match(r'^\s*TITULAR\b', linea, re.IGNORECASE) and i + 1 < len(lineas):
             candidato = _sin_ruido_logo(lineas[i + 1])
@@ -191,9 +196,9 @@ def extraer_datos(texto: str) -> dict:
     # Limpiar íconos OCR del inicio antes de comparar.
     banco = ""
     for linea in lineas:
-        limpia = _solo_letras(linea)
+        limpia = _norm(_solo_letras(linea))
         for b in BANCOS_CONOCIDOS:
-            if b.lower() in limpia.lower():
+            if _norm(b) in limpia:
                 banco = b
                 break
         if banco:
@@ -282,12 +287,7 @@ def _score(datos: dict) -> int:
 
 
 def _beep_progreso(pct: int):
-    """25/50/75% → beep corto ascendente. 100% → secuencia triple prominente."""
-    if pct == 100:
-        for freq, dur in [(800, 200), (1000, 200), (1200, 400)]:
-            winsound.Beep(freq, dur)
-    else:
-        winsound.Beep({25: 600, 50: 700, 75: 800}[pct], 150)
+    pass
 
 
 _CONFIGS_ULTRA = [

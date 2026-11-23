@@ -2,7 +2,7 @@
 Web UI para OCR benchmark.
 Uso: python app.py  →  http://localhost:5000
 """
-import datetime, json, os, re, shutil, tempfile, threading, zipfile
+import datetime, json, os, shutil, tempfile, threading, zipfile
 from pathlib import Path
 from flask import Flask, Response, render_template, request, send_file
 
@@ -31,19 +31,7 @@ def _append_history(entry):
     HISTORY_FILE.write_text(json.dumps(history[:200], ensure_ascii=False, indent=2), encoding="utf-8")
 
 # ── sesiones de upload en batches ───────────────────────────────────────────
-_UPLOADS_DIR = OUT_DIR / ".uploads"
-_UPLOADS_DIR.mkdir(exist_ok=True)
-_sessions: dict = {}  # session_id → tmpdir Path, cached for active uploads
-
-
-def _upload_session(session_id):
-    """Return a stable per-session directory, including after server restarts."""
-    if not session_id or not re.fullmatch(r"[a-f0-9-]{36}", session_id):
-        return None
-    path = _sessions.get(session_id) or (_UPLOADS_DIR / session_id)
-    path.mkdir(parents=True, exist_ok=True)
-    _sessions[session_id] = path
-    return path
+_sessions: dict = {}  # session_id → tmpdir Path
 
 # ── estado global persistente ────────────────────────────────────────────────
 _job_lock    = threading.Lock()
@@ -137,6 +125,7 @@ def _start_job(engine_name, imagenes, cleanup_fn=None):
                 preproc_dir = Path(tempfile.mkdtemp())
                 preproc_imgs = []
                 from benchmark_ocr import _skip as _skip_ref
+                _skip_ref.clear()
                 for i, img_path in enumerate(imagenes):
                     if _skip_ref.is_set():
                         break
@@ -161,8 +150,15 @@ def _start_job(engine_name, imagenes, cleanup_fn=None):
             from repair import reparar_csv, postprocesar_csv
             from benchmark_ocr import _skip
             csv_path = OUT_DIR / f"{engine_name}.csv"
+            _append_history({
+                "engine":     engine_name,
+                "fecha":      (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S"),
+                "n":          len(imagenes),
+                "csv":        f"{engine_name}.csv",
+                "duracion_s": round((datetime.datetime.now() - _t0).total_seconds()),
+            })
             carpeta_imagenes = imagenes[0].parent if imagenes else None
-            if carpeta_imagenes and not _skip.is_set():
+            if carpeta_imagenes and not _skip.is_set() and csv_path.exists():
                 _push({"done": 0, "n": 0, "avg_ms": 0, "eta": 0,
                        "imagen": "reparando campos vacíos...", "CBU": "", "CUIT": "",
                        "titular": "", "banco": "", "_status": "init"})
@@ -170,24 +166,19 @@ def _start_job(engine_name, imagenes, cleanup_fn=None):
                     _push({"_log": msg, "done": 0, "n": 0, "avg_ms": 0, "eta": 0,
                            "imagen": msg, "CBU": "", "CUIT": "", "titular": "", "banco": "",
                            "_status": "repair"})
-                reparar_csv(csv_path, carpeta_imagenes, on_log=_log_repair, stop_event=_skip)
+                reparar_csv(csv_path, carpeta_imagenes, on_log=_log_repair, stop_event=_skip,
+                            debug_dir=OUT_DIR / "debug_banco")
             def _log_post(msg):
                 _push({"_log": msg, "done": 0, "n": 0, "avg_ms": 0, "eta": 0,
                        "imagen": msg, "CBU": "", "CUIT": "", "titular": "", "banco": "",
                        "_status": "repair"})
-            postprocesar_csv(csv_path, on_log=_log_post)
+            if csv_path.exists():
+                postprocesar_csv(csv_path, on_log=_log_post)
             if fallidas:
                 _push({"_status": "warn", "done": 0, "n": 0,
                        "imagen": f"ADVERTENCIA - {len(fallidas)} ARCHIVOS CON ERRORES, "
                                  f"NO SE PUDIERON LEER Y NO SE AÑADIERON AL CSV",
                        "fallidas": sorted(fallidas)})
-            _append_history({
-                "engine":     engine_name,
-                "fecha":      datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "n":          len(imagenes),
-                "csv":        f"{engine_name}.csv",
-                "duracion_s": round((datetime.datetime.now() - _t0).total_seconds()),
-            })
             _push({"done": -1, "msg": f"Listo — {engine_name}", "csv": True, "engine": engine_name})
         except Exception as e:
             _push({"done": -1, "msg": f"Error: {e}", "csv": False})
@@ -206,10 +197,12 @@ def _start_job(engine_name, imagenes, cleanup_fn=None):
 
 @app.post("/upload-batch")
 def upload_batch():
-    session_id = request.form.get("session")
-    tmpdir = _upload_session(session_id)
-    if tmpdir is None:
-        return "session inválida", 400
+    session_id = request.form.get("session") or request.args.get("session")
+    if not session_id:
+        return "session requerido", 400
+    if session_id not in _sessions:
+        _sessions[session_id] = Path(tempfile.mkdtemp())
+    tmpdir = _sessions[session_id]
     for f in request.files.getlist("files"):
         name = Path(f.filename).name
         if Path(name).suffix.lower() == ".zip":
@@ -221,27 +214,8 @@ def upload_batch():
                         target.write_bytes(zf.read(member))
             continue
         if Path(name).suffix.lower() in IMG_EXTS:
-            target = tmpdir / name
-            if not target.exists():
-                fd, partial_name = tempfile.mkstemp(dir=tmpdir, prefix=".upload-")
-                os.close(fd)
-                try:
-                    f.save(partial_name)
-                    os.replace(partial_name, target)
-                finally:
-                    if os.path.exists(partial_name):
-                        os.unlink(partial_name)
+            f.save(str(tmpdir / name))
     return "OK"
-
-
-@app.get("/upload-status/<session_id>")
-def upload_status(session_id):
-    tmpdir = _upload_session(session_id)
-    if tmpdir is None:
-        return "session inválida", 400
-    uploaded = sorted(p.name for p in tmpdir.iterdir()
-                      if p.is_file() and p.suffix.lower() in IMG_EXTS)
-    return json.dumps({"uploaded": uploaded}), 200, {"Content-Type": "application/json"}
 
 
 @app.post("/upload-commit")
@@ -249,20 +223,14 @@ def upload_commit():
     data        = request.json or {}
     session_id  = data.get("session")
     engine_name = data.get("engine", ENGINES[0]["name"])
-    tmpdir      = _sessions.get(session_id) if session_id else None
-    if tmpdir is None:
-        tmpdir = _upload_session(session_id)
+    tmpdir      = _sessions.pop(session_id, None)
     if not tmpdir:
         return "Sesion no encontrada", 400
     imagenes = sorted(p for p in tmpdir.rglob("*") if p.suffix.lower() in IMG_EXTS)
     if not imagenes:
         shutil.rmtree(tmpdir, ignore_errors=True)
         return "Sin imagenes", 400
-    def cleanup_upload():
-        shutil.rmtree(tmpdir, ignore_errors=True)
-        _sessions.pop(session_id, None)
-
-    result = _start_job(engine_name, imagenes, cleanup_fn=cleanup_upload)
+    result = _start_job(engine_name, imagenes, cleanup_fn=lambda: shutil.rmtree(tmpdir, ignore_errors=True))
     if result != "OK":
         return (result[0], result[1]) if isinstance(result, tuple) else (result, 500)
     return "OK"
@@ -358,6 +326,14 @@ def stop():
     return "OK"
 
 
+@app.post("/reset-log")
+def reset_log():
+    with _job_lock:
+        if not _job_running:
+            _job_log.clear()
+    return "OK"
+
+
 @app.get("/history")
 def history():
     if not HISTORY_FILE.exists():
@@ -392,12 +368,20 @@ def csv_download(engine):
         # "2026-06-28 20:26:00" → "Extraccion 28-6 20:26"
         try:
             dt = datetime.datetime.strptime(fecha, "%Y-%m-%d %H:%M:%S")
-            name = f"Extraccion {dt.day}-{dt.month} {dt.strftime('%H:%M')}.csv"
+            name = f"Extraccion {dt.day}-{dt.month} {dt.strftime('%H:%M')}.xlsx"
         except Exception:
-            name = f"{engine}.csv"
+            name = f"{engine}.xlsx"
     else:
-        name = f"{engine}.csv"
-    return send_file(str(p), as_attachment=True, download_name=name)
+        name = f"{engine}.xlsx"
+
+    import pandas as pd
+    import io
+    df = pd.read_csv(p, dtype=str)
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False)
+    buf.seek(0)
+    return send_file(buf, as_attachment=True, download_name=name,
+                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @app.get("/csv-json/<engine>")
@@ -414,5 +398,6 @@ def csv_json(engine):
 
 if __name__ == "__main__":
     _start_key_listener()
-    print("Abriendo en http://localhost:5000")
-    app.run(debug=False, threaded=True, port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    print(f"Abriendo en http://localhost:{port}")
+    app.run(debug=False, threaded=True, host="0.0.0.0", port=port)
