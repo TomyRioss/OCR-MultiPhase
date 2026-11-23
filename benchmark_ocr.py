@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image, ImageOps
 import cv2
 import numpy as np
+from bancos_cbu import banco_por_cbu, es_cvu
 
 WORKERS = 4
 
@@ -40,22 +41,47 @@ def _limpiar_titular(raw):
                 if re.match(r"[a-zA-ZáéíóúÁÉÍÓÚñÑ'\-]{2,}$", w)]
     return " ".join(w.capitalize() for w in palabras)
 
+def _sin_ruido_logo(linea):
+    """El logo del banco queda a la derecha del nombre y el OCR lo lee como 1-2 caracteres ("Md", "4d")."""
+    # ponytail: un apellido real de 1-2 letras al final (ej. "Li") también se pierde
+    palabras = linea.split()
+    if len(palabras) > 2 and len(palabras[-1]) <= 2:
+        palabras.pop()
+    return " ".join(palabras)
+
+
 def extraer_datos(texto):
     lineas = [l.strip() for l in texto.splitlines() if l.strip()]
     titular = ""
+    # Formato de detalle de cuenta: "Titular" en una línea y el nombre debajo.
     for i, linea in enumerate(lineas):
+        if re.match(r'^\s*TITULAR\b', linea, re.IGNORECASE) and i + 1 < len(lineas):
+            candidato = _sin_ruido_logo(lineas[i + 1])
+            if _es_nombre(candidato):
+                titular = _limpiar_titular(candidato)
+                break
+    for i, linea in enumerate(lineas):
+        if titular:
+            break
         if re.search(r'TU[LT]AR\s+DE\s+LA\s+CUENTA', linea, re.IGNORECASE):
             partes = []
             j = i + 1
             while j < len(lineas):
                 sig = lineas[j]
-                if re.match(r'CUIT\s*[:\-]', sig, re.IGNORECASE): break
+                if re.match(r'CUIT(?:\s*/\s*CUIL)?\s*[:\-]?', sig, re.IGNORECASE): break
                 if re.search(r'\d{10,}', sig): break
                 if any(b.lower() in _solo_letras(sig).lower() for b in BANCOS_CONOCIDOS): break
-                partes.append(sig)
+                if len(_limpiar_titular(sig)) >= 3:   # descarta ruido OCR tipo ". la ."
+                    partes.append(sig)
                 j += 1
             titular = _limpiar_titular(" ".join(partes))
             break
+    # Recorte sin etiqueta "Titular": nombre justo antes de "CUIT/CUIL".
+    if not titular:
+        for i, linea in enumerate(lineas):
+            if re.match(r'^\s*CUIT\s*/\s*CUIL\s*$', linea, re.IGNORECASE) and i > 0 and _es_nombre(_sin_ruido_logo(lineas[i - 1])):
+                titular = _limpiar_titular(_sin_ruido_logo(lineas[i - 1]))
+                break
     if not titular:
         for i, linea in enumerate(lineas):
             if "TRANSFERENCIA" in linea.upper():
@@ -65,13 +91,19 @@ def extraer_datos(texto):
                         break
                 break
     cuit = ""
-    m = re.search(r'CUIT\s*[:\-]?\s*(\d{2})\s*[-–]\s*(\d{8})\s*[-–]\s*([\dO])', texto, re.IGNORECASE)
+    m = re.search(r'CUIT(?:\s*/\s*CUIL)?\s*[:\-]?\s*(\d{2})\s*[-–]\s*(\d{8})\s*[-–]\s*([\dO])', texto, re.IGNORECASE)
     if m:
         cuit = f"{m.group(1)}-{m.group(2)}-{m.group(3).replace('O','0')}"
-    tipo_cuenta = "CVU" if re.search(r'\bCVU\b', texto, re.IGNORECASE) else \
-                  "CBU" if re.search(r'\bCBU\b', texto, re.IGNORECASE) else ""
+    # CVU/CBU es una etiqueta genérica. Si trae 22 dígitos, conservarlos;
+    # solo excluir cuando el comprobante indica CVU sin mencionar CBU.
+    etiqueta_generica = bool(re.search(r'\bCVU\s*/\s*CBU\b', texto, re.IGNORECASE))
+    tipo_cuenta = "CVU" if re.search(r'\bCVU\b', texto, re.IGNORECASE) and not etiqueta_generica else \
+                  "CBU" if re.search(r'\bCBU\b', texto, re.IGNORECASE) or etiqueta_generica else ""
     cbu = ""
     m = re.search(r'(?<!\d)(\d{22})(?!\d)', texto)
+    if m:
+        # Regla BCRA: CVU empieza con 000, CBU no. Más fiable que la etiqueta leída por OCR.
+        tipo_cuenta = "CVU" if es_cvu(m.group(1)) else "CBU"
     if m:
         cbu = m.group(1) if tipo_cuenta != "CVU" else "N/A"
     elif tipo_cuenta == "CVU":
@@ -84,6 +116,8 @@ def extraer_datos(texto):
                 banco = b
                 break
         if banco: break
+    # El código de entidad (3 primeros dígitos de la CBU) es más fiable que el OCR del nombre.
+    banco = banco_por_cbu(cbu) or banco
     return {"titular": titular, "banco": banco, "CBU": cbu, "CUIT": cuit}
 
 def preprocess(img):
@@ -232,6 +266,18 @@ CSV_FIELDS = ["imagen", "CBU", "CUIT", "titular", "banco"]
 
 # ── Runner ────────────────────────────────────────────────────────────────────
 
+def con_reintentos(fn, intentos=3, base=0.25):
+    """Ejecuta fn con backoff exponencial (0.25s, 0.5s, ...). Relanza el último error."""
+    # ponytail: 3 intentos fijos; un archivo de 0 bytes nunca se arregla solo, así que no tiene sentido esperar más
+    for i in range(intentos):
+        try:
+            return fn()
+        except Exception:
+            if i == intentos - 1:
+                raise
+            time.sleep(base * 2 ** i)
+
+
 def run_engine(cfg, imagenes, out_dir, on_progress=None):
     name = cfg["name"]
     fn   = cfg["fn"]
@@ -246,7 +292,8 @@ def run_engine(cfg, imagenes, out_dir, on_progress=None):
             on_progress({"done": 0, "n": 0, "avg_ms": 0, "eta": 0,
                          "imagen": f"cargando modelo {name}...",
                          "CBU": "", "CUIT": "", "titular": "", "banco": "", "_status": "init"})
-        fn(Image.open(imagenes[0]))
+        legibles = (p for p in imagenes if p.stat().st_size > 0)
+        fn(Image.open(next(legibles, imagenes[0])))
         if on_progress:
             on_progress({"done": 0, "n": 0, "avg_ms": 0, "eta": 0,
                          "imagen": f"modelo listo, iniciando procesamiento...",
@@ -262,20 +309,18 @@ def run_engine(cfg, imagenes, out_dir, on_progress=None):
     csv_path = out_dir / f"{name}.csv"
 
     # estado compartido entre threads
-    state = {"done": 0, "tiempos": [], "campos": {"CBU": 0, "CUIT": 0, "titular": 0, "banco": 0}, "exitosas": 0}
+    state = {"done": 0, "tiempos": [], "campos": {"CBU": 0, "CUIT": 0, "titular": 0, "banco": 0}, "exitosas": 0, "fallidas": []}
     lock = threading.Lock()
 
     def process_one(img_path):
         if _skip.is_set():
             return None
         try:
-            img = Image.open(img_path)
             t0 = time.perf_counter()
-            texto = fn(img)
+            texto = con_reintentos(lambda: fn(Image.open(img_path)))
             elapsed_ms = (time.perf_counter() - t0) * 1000
         except Exception as e:
-            texto = f"ERROR: {e}"
-            elapsed_ms = 0
+            return img_path.name, 0, None, f"ERROR: {e}"
         datos = extraer_datos(texto)
         return img_path.name, elapsed_ms, datos, texto
 
@@ -295,6 +340,9 @@ def run_engine(cfg, imagenes, out_dir, on_progress=None):
                 if res is None:
                     continue
                 img_name, elapsed_ms, datos, texto = res
+                if datos is None:  # no se pudo leer tras los reintentos: no va al CSV
+                    state["fallidas"].append(img_name)
+                    continue
 
                 with lock:
                     state["tiempos"].append(elapsed_ms)
@@ -363,6 +411,7 @@ def run_engine(cfg, imagenes, out_dir, on_progress=None):
         "engine": name,
         "avg_ms": avg_ms,
         "n": done,
+        "fallidas": state["fallidas"],
         **{f"{k}%": state["campos"][k] / done * 100 if done else 0 for k in state["campos"]},
     }
 

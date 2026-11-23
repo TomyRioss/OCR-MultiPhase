@@ -617,7 +617,12 @@ function ocr() {
       const BATCH      = 100;
       const totalFiles = files.length;
       const totalBatches = Math.ceil(totalFiles / BATCH);
-      const session    = crypto.randomUUID();
+      const manifest = Array.from(files, f => `${f.name}:${f.size}:${f.lastModified}`);
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem('ocr-upload-resume') || 'null'); } catch (_) {}
+      const resumable = saved && JSON.stringify(saved.manifest) === JSON.stringify(manifest);
+      const session = resumable ? saved.session : crypto.randomUUID();
+      localStorage.setItem('ocr-upload-resume', JSON.stringify({ session, manifest }));
       const self       = this;
 
       termLine(`subiendo ${totalFiles} imágenes en ${totalBatches} lote${totalBatches !== 1 ? 's' : ''}...`, 'dim');
@@ -643,14 +648,29 @@ function ocr() {
       };
 
       try {
+        const statusRes = await fetch('/upload-status/' + session);
+        if (!statusRes.ok) throw await statusRes.text();
+        const uploaded = new Set((await statusRes.json()).uploaded);
         for (let b = 0; b < totalBatches; b++) {
-          const slice = Array.from(files).slice(b * BATCH, (b + 1) * BATCH);
+          const slice = Array.from(files).slice(b * BATCH, (b + 1) * BATCH)
+            .filter(f => !uploaded.has(f.name));
+          if (!slice.length) {
+            const done = Math.min((b + 1) * BATCH, totalFiles);
+            const pct = Math.round(done / totalFiles * 100);
+            document.getElementById('bar').value = pct;
+            self.pill = `reanudado ${done}/${totalFiles} (${pct}%)`;
+            continue;
+          }
           const fd = new FormData();
           fd.append('session', session);
           for (const f of slice) fd.append('files', f);
 
-          await new Promise((resolve, reject) => {
+          let attempt = 0;
+          while (true) {
+            try {
+              await new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest();
+            xhr.timeout = 120000;
             xhr.upload.onprogress = ev => {
               if (!ev.lengthComputable) return;
               const batchFrac = ev.loaded / ev.total;
@@ -662,9 +682,25 @@ function ocr() {
             };
             xhr.onload  = () => xhr.status === 200 ? resolve() : reject(xhr.responseText);
             xhr.onerror = () => reject('error de red');
+            xhr.ontimeout = () => reject('tiempo de espera agotado');
             xhr.open('POST', '/upload-batch');
             xhr.send(fd);
           });
+              for (const f of slice) uploaded.add(f.name);
+              break;
+            } catch (err) {
+              attempt++;
+              const done = uploaded.size;
+              setUploadLine(`conexión interrumpida en ${done}/${totalFiles}; reintentando lote ${b + 1}/${totalBatches} (intento ${attempt})...`);
+              self.pill = `reanudando ${done}/${totalFiles}`;
+              await new Promise(resolve => setTimeout(resolve, Math.min(attempt * 2000, 15000)));
+              // Reconcile with the server: the last request may have saved its batch
+              // even when the browser lost the response.
+              const check = await fetch('/upload-status/' + session);
+              if (check.ok) for (const name of (await check.json()).uploaded) uploaded.add(name);
+              if (slice.every(f => uploaded.has(f.name))) break;
+            }
+          }
         }
       } catch (err) {
         termLine('error al subir: ' + err, 'err');
@@ -679,6 +715,7 @@ function ocr() {
         body: JSON.stringify({ session, engine: this.currentEngine }),
       });
       if (!res.ok) { termLine('error al iniciar: ' + await res.text(), 'err'); this.resetUI(); return; }
+      localStorage.removeItem('ocr-upload-resume');
       uploadLine = null;
       document.getElementById('bar').value = 0;
       termLine(`upload completo (${totalFiles} imágenes) — iniciando ${this.currentEngine}...`, 'dim');
@@ -699,6 +736,11 @@ function ocr() {
           document.getElementById('bar').value = 0;
           this.showProgress = false;
           this.evtSource.close(); this.resetUI(); this.refreshFiles(null); this.loadHistory(); return;
+        }
+        if (d._status === 'warn') {
+          termLine(d.imagen, 'err');
+          for (const nombre of d.fallidas || []) termLine('   ' + nombre, 'err');
+          return;
         }
         if (d._status === 'init' || d._status === 'repair') { termLine(d.imagen, 'dim'); return; }
         if (d._status === 'ocr_stats') { termLine(d.imagen, 'ok'); return; }

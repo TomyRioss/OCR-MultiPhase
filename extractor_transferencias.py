@@ -39,6 +39,7 @@ else:
     pytesseract.pytesseract.tesseract_cmd = shutil.which("tesseract") or "/opt/homebrew/bin/tesseract"
 from PIL import Image, ImageEnhance, ImageOps
 from tqdm import tqdm
+from bancos_cbu import banco_por_cbu, es_cvu
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 DEFAULT_WORKERS = 6
@@ -99,28 +100,54 @@ def _es_banco(linea: str) -> bool:
     return any(b.lower() in limpia.lower() for b in BANCOS_CONOCIDOS)
 
 
+def _sin_ruido_logo(linea):
+    """El logo del banco queda a la derecha del nombre y el OCR lo lee como 1-2 caracteres ("Md", "4d")."""
+    # ponytail: un apellido real de 1-2 letras al final (ej. "Li") también se pierde
+    palabras = linea.split()
+    if len(palabras) > 2 and len(palabras[-1]) <= 2:
+        palabras.pop()
+    return " ".join(palabras)
+
+
 def extraer_datos(texto: str) -> dict:
     lineas = [l.strip() for l in texto.splitlines() if l.strip()]
 
     # ── TITULAR ──────────────────────────────────────────────────────────────
     # Ancla primaria: "TULAR DE LA CUENTA" (cubre "TITULAR" y el error OCR "FITUTAR")
     titular = ""
+    # Formato de detalle de cuenta: etiqueta "Titular" y nombre en la línea siguiente.
     for i, linea in enumerate(lineas):
+        if re.match(r'^\s*TITULAR\b', linea, re.IGNORECASE) and i + 1 < len(lineas):
+            candidato = _sin_ruido_logo(lineas[i + 1])
+            if _es_nombre(candidato):
+                titular = _limpiar_titular(candidato)
+                break
+    for i, linea in enumerate(lineas):
+        if titular:
+            break
         if re.search(r'TU[LT]AR\s+DE\s+LA\s+CUENTA', linea, re.IGNORECASE):
             partes = []
             j = i + 1
             while j < len(lineas):
                 sig = lineas[j]
-                if re.match(r'CUIT\s*[:\-]', sig, re.IGNORECASE):
+                if re.match(r'CUIT(?:\s*/\s*CUIL)?\s*[:\-]?', sig, re.IGNORECASE):
                     break
                 if re.search(r'\d{10,}', sig):   # número largo = CBU/alias → stop
                     break
                 if _es_banco(sig):                # línea de banco → stop
                     break
-                partes.append(sig)
+                if len(_limpiar_titular(sig)) >= 3:   # descarta ruido OCR tipo ". la ."
+                    partes.append(sig)
                 j += 1
             titular = _limpiar_titular(" ".join(partes))
             break
+
+    # Recorte sin etiqueta "Titular": nombre justo antes de "CUIT/CUIL".
+    if not titular:
+        for i, linea in enumerate(lineas):
+            if re.match(r'^\s*CUIT\s*/\s*CUIL\s*$', linea, re.IGNORECASE) and i > 0 and _es_nombre(_sin_ruido_logo(lineas[i - 1])):
+                titular = _limpiar_titular(_sin_ruido_logo(lineas[i - 1]))
+                break
 
     # Fallback: primera línea post "Nueva Transferencia" que parece nombre propio
     if not titular:
@@ -135,21 +162,25 @@ def extraer_datos(texto: str) -> dict:
     # ── CUIT ─────────────────────────────────────────────────────────────────
     # Exactamente XX-XXXXXXXX-X (2-8-1 dígitos). Corregir O→0 en dígito final.
     cuit = ""
-    m = re.search(r'CUIT\s*[:\-]?\s*(\d{2})\s*[-–]\s*(\d{8})\s*[-–]\s*([\dO])', texto, re.IGNORECASE)
+    m = re.search(r'CUIT(?:\s*/\s*CUIL)?\s*[:\-]?\s*(\d{2})\s*[-–]\s*(\d{8})\s*[-–]\s*([\dO])', texto, re.IGNORECASE)
     if m:
         cuit = f"{m.group(1)}-{m.group(2)}-{m.group(3).replace('O', '0')}"
 
     # ── TIPO DE CUENTA ───────────────────────────────────────────────────────
     tipo_cuenta = ""
-    if re.search(r'\bCVU\b', texto, re.IGNORECASE):
+    etiqueta_generica = bool(re.search(r'\bCVU\s*/\s*CBU\b', texto, re.IGNORECASE))
+    if re.search(r'\bCVU\b', texto, re.IGNORECASE) and not etiqueta_generica:
         tipo_cuenta = "CVU"
-    elif re.search(r'\bCBU\b', texto, re.IGNORECASE):
+    elif re.search(r'\bCBU\b', texto, re.IGNORECASE) or etiqueta_generica:
         tipo_cuenta = "CBU"
 
     # ── CBU ──────────────────────────────────────────────────────────────────
     # Exactamente 22 dígitos numéricos (ni 21 ni 23).
     cbu = ""
     m = re.search(r'(?<!\d)(\d{22})(?!\d)', texto)
+    if m:
+        # Regla BCRA: CVU empieza con 000, CBU no. Más fiable que la etiqueta leída por OCR.
+        tipo_cuenta = "CVU" if es_cvu(m.group(1)) else "CBU"
     if m:
         cbu = m.group(1) if tipo_cuenta != "CVU" else "N/A"
     elif tipo_cuenta == "CVU":
@@ -167,6 +198,8 @@ def extraer_datos(texto: str) -> dict:
                 break
         if banco:
             break
+    # El código de entidad (3 primeros dígitos de la CBU) es más fiable que el OCR del nombre.
+    banco = banco_por_cbu(cbu) or banco
 
     return {
         "titular": titular,

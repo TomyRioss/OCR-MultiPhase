@@ -2,13 +2,13 @@
 Web UI para OCR benchmark.
 Uso: python app.py  →  http://localhost:5000
 """
-import datetime, json, shutil, tempfile, threading, zipfile
+import datetime, json, os, re, shutil, tempfile, threading, zipfile
 from pathlib import Path
 from flask import Flask, Response, render_template, request, send_file
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
-from benchmark_ocr import ENGINES, run_engine, _start_key_listener
+from benchmark_ocr import ENGINES, run_engine, _start_key_listener, con_reintentos
 from check import analizar_csv
 
 app = Flask(__name__)
@@ -31,7 +31,19 @@ def _append_history(entry):
     HISTORY_FILE.write_text(json.dumps(history[:200], ensure_ascii=False, indent=2), encoding="utf-8")
 
 # ── sesiones de upload en batches ───────────────────────────────────────────
-_sessions: dict = {}  # session_id → tmpdir Path
+_UPLOADS_DIR = OUT_DIR / ".uploads"
+_UPLOADS_DIR.mkdir(exist_ok=True)
+_sessions: dict = {}  # session_id → tmpdir Path, cached for active uploads
+
+
+def _upload_session(session_id):
+    """Return a stable per-session directory, including after server restarts."""
+    if not session_id or not re.fullmatch(r"[a-f0-9-]{36}", session_id):
+        return None
+    path = _sessions.get(session_id) or (_UPLOADS_DIR / session_id)
+    path.mkdir(parents=True, exist_ok=True)
+    _sessions[session_id] = path
+    return path
 
 # ── estado global persistente ────────────────────────────────────────────────
 _job_lock    = threading.Lock()
@@ -114,6 +126,7 @@ def _start_job(engine_name, imagenes, cleanup_fn=None):
 
             imagenes_a_procesar = imagenes
             preproc_dir = None
+            fallidas = []
             if engine_name == "tesseract":
                 from benchmark_ocr import opencv_preprocess
                 import tempfile
@@ -128,14 +141,23 @@ def _start_job(engine_name, imagenes, cleanup_fn=None):
                     if _skip_ref.is_set():
                         break
                     out_path = preproc_dir / img_path.name
-                    opencv_preprocess(_Image.open(img_path)).save(str(out_path))
+                    try:
+                        con_reintentos(lambda: opencv_preprocess(_Image.open(img_path)).save(str(out_path)))
+                    except Exception as e:
+                        # archivo vacío o corrupto (p. ej. 0 bytes en descargas de Drive): saltar, no cortar el job
+                        fallidas.append(img_path.name)
+                        _push({"done": i + 1, "n": len(imagenes), "avg_ms": 0, "eta": 0,
+                               "imagen": f"salteada {img_path.name}: {e}",
+                               "CBU": "", "CUIT": "", "titular": "", "banco": "", "_status": "init"})
+                        continue
                     preproc_imgs.append(out_path)
                     _push({"done": i + 1, "n": len(imagenes), "avg_ms": 0, "eta": 0,
                            "imagen": f"preprocesando {i + 1}/{len(imagenes)} imágenes...",
                            "CBU": "", "CUIT": "", "titular": "", "banco": "", "_status": "init"})
                 imagenes_a_procesar = preproc_imgs
 
-            run_engine(cfg, imagenes_a_procesar, OUT_DIR, on_progress=cb)
+            resultado = run_engine(cfg, imagenes_a_procesar, OUT_DIR, on_progress=cb)
+            fallidas += (resultado or {}).get("fallidas", [])
             from repair import reparar_csv, postprocesar_csv
             from benchmark_ocr import _skip
             csv_path = OUT_DIR / f"{engine_name}.csv"
@@ -154,6 +176,11 @@ def _start_job(engine_name, imagenes, cleanup_fn=None):
                        "imagen": msg, "CBU": "", "CUIT": "", "titular": "", "banco": "",
                        "_status": "repair"})
             postprocesar_csv(csv_path, on_log=_log_post)
+            if fallidas:
+                _push({"_status": "warn", "done": 0, "n": 0,
+                       "imagen": f"ADVERTENCIA - {len(fallidas)} ARCHIVOS CON ERRORES, "
+                                 f"NO SE PUDIERON LEER Y NO SE AÑADIERON AL CSV",
+                       "fallidas": sorted(fallidas)})
             _append_history({
                 "engine":     engine_name,
                 "fecha":      datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -180,16 +207,41 @@ def _start_job(engine_name, imagenes, cleanup_fn=None):
 @app.post("/upload-batch")
 def upload_batch():
     session_id = request.form.get("session")
-    if not session_id:
-        return "session requerido", 400
-    if session_id not in _sessions:
-        _sessions[session_id] = Path(tempfile.mkdtemp())
-    tmpdir = _sessions[session_id]
+    tmpdir = _upload_session(session_id)
+    if tmpdir is None:
+        return "session inválida", 400
     for f in request.files.getlist("files"):
         name = Path(f.filename).name
+        if Path(name).suffix.lower() == ".zip":
+            with zipfile.ZipFile(f.stream) as zf:
+                for member in zf.namelist():
+                    member_name = Path(member).name  # sin subcarpetas: evita rutas fuera de tmpdir
+                    target = tmpdir / member_name
+                    if Path(member_name).suffix.lower() in IMG_EXTS and not target.exists():
+                        target.write_bytes(zf.read(member))
+            continue
         if Path(name).suffix.lower() in IMG_EXTS:
-            f.save(str(tmpdir / name))
+            target = tmpdir / name
+            if not target.exists():
+                fd, partial_name = tempfile.mkstemp(dir=tmpdir, prefix=".upload-")
+                os.close(fd)
+                try:
+                    f.save(partial_name)
+                    os.replace(partial_name, target)
+                finally:
+                    if os.path.exists(partial_name):
+                        os.unlink(partial_name)
     return "OK"
+
+
+@app.get("/upload-status/<session_id>")
+def upload_status(session_id):
+    tmpdir = _upload_session(session_id)
+    if tmpdir is None:
+        return "session inválida", 400
+    uploaded = sorted(p.name for p in tmpdir.iterdir()
+                      if p.is_file() and p.suffix.lower() in IMG_EXTS)
+    return json.dumps({"uploaded": uploaded}), 200, {"Content-Type": "application/json"}
 
 
 @app.post("/upload-commit")
@@ -197,14 +249,20 @@ def upload_commit():
     data        = request.json or {}
     session_id  = data.get("session")
     engine_name = data.get("engine", ENGINES[0]["name"])
-    tmpdir      = _sessions.pop(session_id, None)
+    tmpdir      = _sessions.get(session_id) if session_id else None
+    if tmpdir is None:
+        tmpdir = _upload_session(session_id)
     if not tmpdir:
         return "Sesion no encontrada", 400
     imagenes = sorted(p for p in tmpdir.rglob("*") if p.suffix.lower() in IMG_EXTS)
     if not imagenes:
         shutil.rmtree(tmpdir, ignore_errors=True)
         return "Sin imagenes", 400
-    result = _start_job(engine_name, imagenes, cleanup_fn=lambda: shutil.rmtree(tmpdir, ignore_errors=True))
+    def cleanup_upload():
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        _sessions.pop(session_id, None)
+
+    result = _start_job(engine_name, imagenes, cleanup_fn=cleanup_upload)
     if result != "OK":
         return (result[0], result[1]) if isinstance(result, tuple) else (result, 500)
     return "OK"
