@@ -39,7 +39,7 @@ else:
     pytesseract.pytesseract.tesseract_cmd = shutil.which("tesseract") or "/opt/homebrew/bin/tesseract"
 from PIL import Image, ImageEnhance, ImageOps
 from tqdm import tqdm
-from bancos_cbu import banco_por_cbu, es_cvu
+from bancos_cbu import banco_por_cbu, es_cvu, billetera_por_cvu
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 DEFAULT_WORKERS = 6
@@ -112,6 +112,19 @@ def _sin_ruido_logo(linea):
     if len(palabras) > 2 and len(palabras[-1]) <= 2:
         palabras.pop()
     return " ".join(palabras)
+
+
+def _banco_por_layout(lineas: list[str]) -> str:
+    """"Nueva Transferencia": badge entre la línea CUIT y "Alias". "Verificá los datos": línea bajo "Banco"."""
+    for i, linea in enumerate(lineas[:-1]):
+        sig = lineas[i + 1]
+        if re.match(r'^\s*Banco\s*$', linea, re.IGNORECASE) or (
+                re.search(r'CUIT\s*:', linea, re.IGNORECASE) and not re.search(r'\bAlias\b', sig, re.IGNORECASE)):
+            valor = _solo_letras(sig)
+            # badge genérico "CVU" o ruido OCR no es un nombre de entidad
+            if len(valor) >= 3 and _norm(valor) not in ("cvu", "cbu") and not re.search(r'\d{3,}', valor):
+                return valor
+    return ""
 
 
 def extraer_datos(texto: str) -> dict:
@@ -203,8 +216,13 @@ def extraer_datos(texto: str) -> dict:
                 break
         if banco:
             break
+    # Bancos/billeteras fuera de la lista: leer el valor por posición en el layout.
+    if not banco:
+        banco = _banco_por_layout(lineas)
     # El código de entidad (3 primeros dígitos de la CBU) es más fiable que el OCR del nombre.
     banco = banco_por_cbu(cbu) or banco
+    if not banco and m:
+        banco = billetera_por_cvu(m.group(1))
 
     return {
         "titular": titular,

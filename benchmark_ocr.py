@@ -12,113 +12,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image, ImageOps
 import cv2
 import numpy as np
-from bancos_cbu import banco_por_cbu, es_cvu
 
 WORKERS = 4
 
 # ── Datos ─────────────────────────────────────────────────────────────────────
 
-BANCOS_CONOCIDOS = [
-    "Nación", "Galicia", "Santander", "BBVA", "Macro", "HSBC", "Citibank",
-    "Provincia BA", "Provincia", "Patagonia", "Supervielle", "Comafi",
-    "Credicoop", "Industrial", "Brubank", "Mercado Pago", "Uala", "Ualá",
-    "NaranjaX", "Naranja X", "Nuevo Banco de Santa Fe", "Santa Fe",
-    "Bind", "Wilobank", "Reba", "Lemon", "Personal Pay", "Modo", "Bapro",
-    "Claro Pay",
-]
-
-def _solo_letras(linea):
-    return re.sub(r'^[^a-zA-ZáéíóúÁÉÍÓÚñÑ]+', '', linea).strip()
-
-def _es_nombre(s):
-    palabras = s.replace(",", " ").split()
-    return (len(palabras) >= 2
-            and all(re.match(r"[a-zA-ZáéíóúÁÉÍÓÚñÑ'\-]+$", w) for w in palabras)
-            and not re.search(r'\d', s))
-
-def _limpiar_titular(raw):
-    palabras = [w for w in raw.replace(",", " ").split()
-                if re.match(r"[a-zA-ZáéíóúÁÉÍÓÚñÑ'\-]{2,}$", w)]
-    return " ".join(w.capitalize() for w in palabras)
-
-def _sin_ruido_logo(linea):
-    """El logo del banco queda a la derecha del nombre y el OCR lo lee como 1-2 caracteres ("Md", "4d")."""
-    # ponytail: un apellido real de 1-2 letras al final (ej. "Li") también se pierde
-    palabras = linea.split()
-    if len(palabras) > 2 and len(palabras[-1]) <= 2:
-        palabras.pop()
-    return " ".join(palabras)
-
-
-def extraer_datos(texto):
-    lineas = [l.strip() for l in texto.splitlines() if l.strip()]
-    titular = ""
-    # Formato de detalle de cuenta: "Titular" en una línea y el nombre debajo.
-    for i, linea in enumerate(lineas):
-        if re.match(r'^\s*TITULAR\b', linea, re.IGNORECASE) and i + 1 < len(lineas):
-            candidato = _sin_ruido_logo(lineas[i + 1])
-            if _es_nombre(candidato):
-                titular = _limpiar_titular(candidato)
-                break
-    for i, linea in enumerate(lineas):
-        if titular:
-            break
-        if re.search(r'TU[LT]AR\s+DE\s+LA\s+CUENTA', linea, re.IGNORECASE):
-            partes = []
-            j = i + 1
-            while j < len(lineas):
-                sig = lineas[j]
-                if re.match(r'CUIT(?:\s*/\s*CUIL)?\s*[:\-]?', sig, re.IGNORECASE): break
-                if re.search(r'\d{10,}', sig): break
-                if any(b.lower() in _solo_letras(sig).lower() for b in BANCOS_CONOCIDOS): break
-                if len(_limpiar_titular(sig)) >= 3:   # descarta ruido OCR tipo ". la ."
-                    partes.append(sig)
-                j += 1
-            titular = _limpiar_titular(" ".join(partes))
-            break
-    # Recorte sin etiqueta "Titular": nombre justo antes de "CUIT/CUIL".
-    if not titular:
-        for i, linea in enumerate(lineas):
-            if re.match(r'^\s*CUIT\s*/\s*CUIL\s*$', linea, re.IGNORECASE) and i > 0 and _es_nombre(_sin_ruido_logo(lineas[i - 1])):
-                titular = _limpiar_titular(_sin_ruido_logo(lineas[i - 1]))
-                break
-    if not titular:
-        for i, linea in enumerate(lineas):
-            if "TRANSFERENCIA" in linea.upper():
-                for j in range(i + 1, min(i + 5, len(lineas))):
-                    if _es_nombre(lineas[j]):
-                        titular = _limpiar_titular(lineas[j])
-                        break
-                break
-    cuit = ""
-    m = re.search(r'CUIT(?:\s*/\s*CUIL)?\s*[:\-]?\s*(\d{2})\s*[-–]\s*(\d{8})\s*[-–]\s*([\dO])', texto, re.IGNORECASE)
-    if m:
-        cuit = f"{m.group(1)}-{m.group(2)}-{m.group(3).replace('O','0')}"
-    # CVU/CBU es una etiqueta genérica. Si trae 22 dígitos, conservarlos;
-    # solo excluir cuando el comprobante indica CVU sin mencionar CBU.
-    etiqueta_generica = bool(re.search(r'\bCVU\s*/\s*CBU\b', texto, re.IGNORECASE))
-    tipo_cuenta = "CVU" if re.search(r'\bCVU\b', texto, re.IGNORECASE) and not etiqueta_generica else \
-                  "CBU" if re.search(r'\bCBU\b', texto, re.IGNORECASE) or etiqueta_generica else ""
-    cbu = ""
-    m = re.search(r'(?<!\d)(\d{22})(?!\d)', texto)
-    if m:
-        # Regla BCRA: CVU empieza con 000, CBU no. Más fiable que la etiqueta leída por OCR.
-        tipo_cuenta = "CVU" if es_cvu(m.group(1)) else "CBU"
-    if m:
-        cbu = m.group(1) if tipo_cuenta != "CVU" else "N/A"
-    elif tipo_cuenta == "CVU":
-        cbu = "N/A"
-    banco = ""
-    for linea in lineas:
-        limpia = _solo_letras(linea)
-        for b in BANCOS_CONOCIDOS:
-            if b.lower() in limpia.lower():
-                banco = b
-                break
-        if banco: break
-    # El código de entidad (3 primeros dígitos de la CBU) es más fiable que el OCR del nombre.
-    banco = banco_por_cbu(cbu) or banco
-    return {"titular": titular, "banco": banco, "CBU": cbu, "CUIT": cuit}
+# Una sola fuente de verdad para el parseo (antes duplicado y desincronizado).
+from extractor_transferencias import extraer_datos
 
 def preprocess(img):
     gris = img.convert("L")

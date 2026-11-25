@@ -41,6 +41,23 @@ CODIGOS_ENTIDAD = {
 }
 
 
+# CVU: "000" + código de PSP (4 dígitos). Solo prefijos verificados contra imágenes reales.
+CODIGOS_PSP = {
+    "0000006": "Administradora San Juan SA",
+    "0000013": "Prex",
+    "0000076": "Personal Pay",
+    "0000085": "Claro Pay",
+    "0000139": "Belo",
+    "0000168": "Lemon",
+}
+
+
+def billetera_por_cvu(cvu: str) -> str:
+    if len(cvu) != 22 or not es_cvu(cvu):
+        return ""
+    return CODIGOS_PSP.get(cvu[:7], "")
+
+
 def es_cvu(numero: str) -> bool:
     """Las CVU de billeteras virtuales empiezan con 000."""
     return len(numero) == 22 and numero.startswith("000")
@@ -58,4 +75,6 @@ if __name__ == "__main__":
     assert banco_por_cbu("9990000000000000000000") == ""
     assert banco_por_cbu("N/A") == ""
     assert es_cvu("0000076500000044198183") and not es_cvu("0110031030003121658665")
+    assert billetera_por_cvu("0000013000032187926736") == "Prex"
+    assert billetera_por_cvu("0110031030003121658665") == ""
     print("ok")
